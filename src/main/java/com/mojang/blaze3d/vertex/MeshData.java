@@ -1,0 +1,166 @@
+package com.mojang.blaze3d.vertex;
+
+import com.mojang.blaze3d.IndexType;
+import com.mojang.blaze3d.PrimitiveTopology;
+import it.unimi.dsi.fastutil.ints.IntConsumer;
+import java.nio.ByteBuffer;
+import net.optifine.render.MultiTextureBuilder;
+import net.optifine.render.MultiTextureData;
+import org.apache.commons.lang3.mutable.MutableLong;
+import org.lwjgl.system.MemoryUtil;
+
+public class MeshData implements AutoCloseable {
+    private final ByteBufferBuilder.Result vertexBuffer;
+    private ByteBufferBuilder.Result indexBuffer;
+    private final MeshData.DrawState drawState;
+    private MultiTextureData multiTextureData;
+    private boolean persistent;
+
+    public MeshData(ByteBufferBuilder.Result vertexBuffer, MeshData.DrawState drawState) {
+        this(vertexBuffer, drawState, null);
+    }
+
+    public MeshData(ByteBufferBuilder.Result vertexBuffer, MeshData.DrawState drawState, MultiTextureData multiTextureDataIn) {
+        this.vertexBuffer = vertexBuffer;
+        this.drawState = drawState;
+        this.multiTextureData = multiTextureDataIn;
+    }
+
+    public static void decodeQuadCentroids(ByteBuffer vertexBuffer, int vertexCount, VertexFormat format, CompactVectorArray output, int outputIndex) {
+        VertexFormatElement positionElement = format.getElement("Position");
+        if (positionElement == null) {
+            throw new IllegalArgumentException("Cannot identify quad centers with no position element");
+        }
+
+        int positionOffset = vertexBuffer.position() + positionElement.offset();
+        int vertexStride = format.getVertexSize();
+        int quadStride = vertexStride * 4;
+        int quadCount = vertexCount / 4;
+
+        for (int i = 0; i < quadCount; i++) {
+            int firstPosOffset = i * quadStride + positionOffset;
+            int secondPosOffset = firstPosOffset + vertexStride * 2;
+            float x0 = vertexBuffer.getFloat(firstPosOffset + 0);
+            float y0 = vertexBuffer.getFloat(firstPosOffset + 4);
+            float z0 = vertexBuffer.getFloat(firstPosOffset + 8);
+            float x1 = vertexBuffer.getFloat(secondPosOffset + 0);
+            float y1 = vertexBuffer.getFloat(secondPosOffset + 4);
+            float z1 = vertexBuffer.getFloat(secondPosOffset + 8);
+            float xMid = (x0 + x1) / 2.0F;
+            float yMid = (y0 + y1) / 2.0F;
+            float zMid = (z0 + z1) / 2.0F;
+            output.set(outputIndex + i, xMid, yMid, zMid);
+        }
+    }
+
+    public ByteBuffer vertexBuffer() {
+        return this.vertexBuffer.byteBuffer();
+    }
+
+    public ByteBuffer indexBuffer() {
+        return this.indexBuffer != null ? this.indexBuffer.byteBuffer() : null;
+    }
+
+    public ByteBufferBuilder.Result vertexBufferSlice() {
+        return this.vertexBuffer;
+    }
+
+    public MeshData.DrawState drawState() {
+        return this.drawState;
+    }
+
+    public MeshData.SortState sortQuads(ByteBufferBuilder indexBufferTarget, VertexSorting sorting) {
+        if (this.drawState.primitiveTopology() != PrimitiveTopology.QUADS) {
+            return null;
+        }
+
+        CompactVectorArray centroids = new CompactVectorArray(this.drawState.vertexCount() / 4);
+        decodeQuadCentroids(this.vertexBuffer.byteBuffer(), this.drawState.vertexCount(), this.drawState.format(), centroids, 0);
+        MeshData.SortState sortState = new MeshData.SortState(centroids, this.drawState.indexType(), this.multiTextureData);
+        this.indexBuffer = sortState.buildSortedIndexBuffer(indexBufferTarget, sorting);
+        return sortState;
+    }
+
+    @Override
+    public void close() {
+        if (!this.persistent) {
+            this.vertexBuffer.close();
+            if (this.indexBuffer != null) {
+                this.indexBuffer.close();
+            }
+        }
+    }
+
+    public MultiTextureData getMultiTextureData() {
+        return this.multiTextureData;
+    }
+
+    public ByteBufferBuilder.Result getVertexResult() {
+        return this.vertexBuffer;
+    }
+
+    public boolean isPersistent() {
+        return this.persistent;
+    }
+
+    public void setPersistent(boolean persistent) {
+        this.persistent = persistent;
+    }
+
+    @Override
+    public String toString() {
+        return "vertexBuffer: (" + this.vertexBuffer + "), indexBuffer: (" + this.indexBuffer + "), drawState: (" + this.drawState + ")";
+    }
+
+    public record DrawState(VertexFormat format, int vertexCount, int indexCount, PrimitiveTopology primitiveTopology, IndexType indexType) {
+        public int getVertexBufferSize() {
+            return this.vertexCount * this.format.getVertexSize();
+        }
+    }
+
+    public record SortState(CompactVectorArray centroids, IndexType indexType, MultiTextureData multiTextureData) {
+        public SortState(CompactVectorArray centroids, IndexType indexType) {
+            this(centroids, indexType, null);
+        }
+
+        public ByteBufferBuilder.Result buildSortedIndexBuffer(ByteBufferBuilder target, VertexSorting sorting) {
+            int[] startIndices = sorting.sort(this.centroids);
+            long pointer = target.reserve(startIndices.length * 6 * this.indexType.bytes);
+            writeIndices(startIndices, this.indexWriter(pointer, this.indexType));
+            if (this.multiTextureData != null) {
+                MultiTextureBuilder mtb = target.getBufferBuilderCache().getMultiTextureBuilder();
+                this.multiTextureData.prepareSort(mtb, startIndices);
+            }
+
+            return target.build();
+        }
+
+        public void writeSortedIndexBuffer(ByteBuffer target, VertexSorting sorting) {
+            IntConsumer output = switch (this.indexType) {
+                case SHORT -> value -> target.putShort((short)value);
+                case INT -> target::putInt;
+            };
+            writeIndices(sorting.sort(this.centroids), output);
+        }
+
+        private static void writeIndices(int[] startIndices, IntConsumer output) {
+            for (int startIndex : startIndices) {
+                output.accept(startIndex * 4 + 0);
+                output.accept(startIndex * 4 + 1);
+                output.accept(startIndex * 4 + 2);
+                output.accept(startIndex * 4 + 2);
+                output.accept(startIndex * 4 + 3);
+                output.accept(startIndex * 4 + 0);
+            }
+        }
+
+        private IntConsumer indexWriter(long pointer, IndexType indexType) {
+            MutableLong nextIndex = new MutableLong(pointer);
+
+            return switch (indexType) {
+                case SHORT -> value -> MemoryUtil.memPutShort(nextIndex.getAndAdd(2L), (short)value);
+                case INT -> value -> MemoryUtil.memPutInt(nextIndex.getAndAdd(4L), value);
+            };
+        }
+    }
+}

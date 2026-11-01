@@ -1,0 +1,58 @@
+package net.minecraft.client.renderer;
+
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
+import java.util.Arrays;
+import java.util.Map;
+import net.minecraft.client.color.block.BlockColors;
+import net.minecraft.client.renderer.block.FluidRenderer;
+import net.minecraft.client.renderer.block.FluidStateModelSet;
+import net.minecraft.client.renderer.block.ModelBlockRenderer;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
+import net.minecraft.util.Util;
+
+public class SectionBufferBuilderPack implements AutoCloseable {
+    public static final int TOTAL_BUFFERS_SIZE = Arrays.stream(ChunkSectionLayer.values()).mapToInt(ChunkSectionLayer::bufferSize).sum();
+    private final Map<ChunkSectionLayer, ByteBufferBuilder> buffers = Util.makeEnumMap(
+        ChunkSectionLayer.class, layer -> new ByteBufferBuilder(layer.bufferSize())
+    );
+    private ModelBlockRenderer blockRenderer;
+    private FluidRenderer fluidRenderer;
+
+    public ByteBufferBuilder buffer(ChunkSectionLayer layer) {
+        return this.buffers.get(layer);
+    }
+
+    public void clearAll() {
+        this.buffers.values().forEach(ByteBufferBuilder::clear);
+    }
+
+    public void discardAll() {
+        this.buffers.values().forEach(ByteBufferBuilder::discard);
+    }
+
+    @Override
+    public void close() {
+        this.buffers.values().forEach(ByteBufferBuilder::close);
+    }
+
+    public ModelBlockRenderer getModelBlockRenderer(boolean ambientOcclusion, boolean cull, BlockColors blockColors) {
+        if (this.blockRenderer != null
+            && this.blockRenderer.isAmbientOcclusion() == ambientOcclusion
+            && this.blockRenderer.isCull() == cull
+            && this.blockRenderer.getBlockColors() == blockColors) {
+            return this.blockRenderer;
+        }
+
+        this.blockRenderer = new ModelBlockRenderer(ambientOcclusion, cull, blockColors);
+        return this.blockRenderer;
+    }
+
+    public FluidRenderer getFluidRenderer(FluidStateModelSet fluidModelSet) {
+        if (this.fluidRenderer != null && this.fluidRenderer.getFluidModels() == fluidModelSet) {
+            return this.fluidRenderer;
+        }
+
+        this.fluidRenderer = new FluidRenderer(fluidModelSet);
+        return this.fluidRenderer;
+    }
+}

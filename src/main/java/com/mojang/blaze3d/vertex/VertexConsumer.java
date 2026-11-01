@@ -1,0 +1,282 @@
+package com.mojang.blaze3d.vertex;
+
+import java.nio.ByteBuffer;
+import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.renderer.block.ModelBlockRenderer;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
+import net.minecraft.client.renderer.feature.RenderTypeFeatureRenderer;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.util.LightCoordsUtil;
+import net.optifine.Config;
+import net.optifine.IRandomEntity;
+import net.optifine.RandomEntities;
+import net.optifine.render.VertexPosition;
+import net.optifine.shaders.SVertexBuilder;
+import net.optifine.shaders.Shaders;
+import net.optifine.util.MathUtils;
+import org.joml.Matrix3f;
+import org.joml.Matrix3x2fc;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
+import org.joml.Vector2f;
+import org.joml.Vector3f;
+import org.joml.Vector3fc;
+
+public interface VertexConsumer {
+    VertexConsumer addVertex(float var1, float var2, float var3);
+
+    VertexConsumer setColor(int var1, int var2, int var3, int var4);
+
+    VertexConsumer setColor(int var1);
+
+    VertexConsumer setUv(float var1, float var2);
+
+    VertexConsumer setUv1(int var1, int var2);
+
+    VertexConsumer setUv2(int var1, int var2);
+
+    VertexConsumer setNormal(float var1, float var2, float var3);
+
+    VertexConsumer setLineWidth(float var1);
+
+    default void addVertex(float x, float y, float z, int color, float u, float v, int overlayCoords, int lightCoords, float nx, float ny, float nz) {
+        this.addVertex(x, y, z);
+        this.setColor(color);
+        this.setUv(u, v);
+        this.setOverlay(overlayCoords);
+        this.setLight(lightCoords);
+        this.setNormal(nx, ny, nz);
+    }
+
+    default VertexConsumer setColor(float r, float g, float b, float a) {
+        return this.setColor((int)(r * 255.0F), (int)(g * 255.0F), (int)(b * 255.0F), (int)(a * 255.0F));
+    }
+
+    default VertexConsumer setLight(int packedLightCoords) {
+        return this.setUv2(packedLightCoords & 65535, packedLightCoords >> 16 & 65535);
+    }
+
+    default VertexConsumer setOverlay(int packedOverlayCoords) {
+        return this.setUv1(packedOverlayCoords & 65535, packedOverlayCoords >> 16 & 65535);
+    }
+
+    default void putBlockBakedQuad(float x, float y, float z, BakedQuad quad, QuadInstance instance) {
+        if (Config.isShaders()) {
+            Vector3f midBlock = instance.getMidBlock();
+            this.setMidBlock(midBlock.x, midBlock.y, midBlock.z);
+            SVertexBuilder.pushEntity(instance.getBlockState(), this);
+        }
+
+        this.putSprite(quad.sprite());
+        boolean separateAoInAlpha = ModelBlockRenderer.isSeparateAoLightValue();
+        boolean shadersVelocity = Config.isShaders() && Shaders.useVelocityAttrib && Config.isMinecraftThread();
+        if (shadersVelocity) {
+            IRandomEntity entity = RandomEntities.getRandomEntityRendered();
+            if (entity != null) {
+                VertexPosition[] quadPos = quad.getVertexPositions(entity.getId());
+                this.setQuadVertexPositions(quadPos);
+            }
+        }
+
+        Vector3fc normal = quad.direction().getUnitVec3f();
+        int lightEmission = quad.materialInfo().lightEmission();
+
+        for (int vertex = 0; vertex < 4; vertex++) {
+            Vector3fc pos = quad.position(vertex);
+            long packedUv = this.isMultiTexture() ? quad.getPackedUvSingle(vertex) : quad.packedUV(vertex);
+            int vertexColor = instance.getColor(vertex);
+            int light = instance.getLightCoordsWithEmission(vertex, lightEmission);
+            float u = UVPair.unpackU(packedUv);
+            float v = UVPair.unpackV(packedUv);
+            this.addVertex(pos.x() + x, pos.y() + y, pos.z() + z, vertexColor, u, v, instance.overlayCoords(), light, normal.x(), normal.y(), normal.z());
+        }
+
+        if (Config.isShaders()) {
+            SVertexBuilder.popEntity(this);
+        }
+    }
+
+    default void putBakedQuad(PoseStack.Pose pose, BakedQuad quad, QuadInstance instance) {
+        if (Config.isShaders()) {
+            Vector3f midBlock = instance.getMidBlock();
+            this.setMidBlock(midBlock.x, midBlock.y, midBlock.z);
+            SVertexBuilder.pushEntity(instance.getBlockState(), this);
+        }
+
+        this.putSprite(quad.sprite());
+        boolean separateAoInAlpha = ModelBlockRenderer.isSeparateAoLightValue();
+        boolean shadersVelocity = Config.isShaders() && Shaders.useVelocityAttrib && Config.isMinecraftThread();
+        if (shadersVelocity) {
+            IRandomEntity entity = RandomEntities.getRandomEntityRendered();
+            if (entity != null) {
+                VertexPosition[] quadPos = quad.getVertexPositions(entity.getId());
+                this.setQuadVertexPositions(quadPos);
+            }
+        }
+
+        Vector3fc normalVec = quad.direction().getUnitVec3f();
+        Matrix4f matrix = pose.pose();
+        Vector3f normal = pose.transformNormal(normalVec, this.getTempVec3f());
+        int lightEmission = quad.materialInfo().lightEmission();
+
+        for (int vertex = 0; vertex < 4; vertex++) {
+            Vector3fc position = quad.position(vertex);
+            long packedUv = this.isMultiTexture() ? quad.getPackedUvSingle(vertex) : quad.packedUV(vertex);
+            int vertexColor = instance.getColor(vertex);
+            int light = instance.getLightCoordsWithEmission(vertex, lightEmission);
+            float xt = MathUtils.getTransformX(matrix, position.x(), position.y(), position.z());
+            float yt = MathUtils.getTransformY(matrix, position.x(), position.y(), position.z());
+            float zt = MathUtils.getTransformZ(matrix, position.x(), position.y(), position.z());
+            float u = UVPair.unpackU(packedUv);
+            float v = UVPair.unpackV(packedUv);
+            this.addVertex(xt, yt, zt, vertexColor, u, v, instance.overlayCoords(), light, normal.x(), normal.y(), normal.z());
+        }
+
+        if (Config.isShaders()) {
+            SVertexBuilder.popEntity(this);
+        }
+    }
+
+    default VertexConsumer addVertex(Vector3fc position) {
+        return this.addVertex(position.x(), position.y(), position.z());
+    }
+
+    default VertexConsumer addVertex(PoseStack.Pose pose, Vector3fc position) {
+        return this.addVertex(pose, position.x(), position.y(), position.z());
+    }
+
+    default VertexConsumer addVertex(PoseStack.Pose pose, float x, float y, float z) {
+        return this.addVertex(pose.pose(), x, y, z);
+    }
+
+    default VertexConsumer addVertex(Matrix4fc pose, float x, float y, float z) {
+        Vector3f pos = pose.transformPosition(x, y, z, this.getTempVec3f());
+        return this.addVertex(pos.x(), pos.y(), pos.z());
+    }
+
+    default VertexConsumer addVertexWith2DPose(Matrix3x2fc pose, float x, float y) {
+        Vector2f pos = pose.transformPosition(x, y, new Vector2f());
+        return this.addVertex(pos.x(), pos.y(), 0.0F);
+    }
+
+    default VertexConsumer setNormal(PoseStack.Pose pose, float x, float y, float z) {
+        Vector3f normal = pose.transformNormal(x, y, z, this.getTempVec3f());
+        return this.setNormal(normal.x(), normal.y(), normal.z());
+    }
+
+    default VertexConsumer setNormal(PoseStack.Pose pose, Vector3fc normal) {
+        return this.setNormal(pose, normal.x(), normal.y(), normal.z());
+    }
+
+    default void putSprite(TextureAtlasSprite sprite) {
+    }
+
+    default void setSprite(TextureAtlasSprite sprite) {
+    }
+
+    default boolean isMultiTexture() {
+        return false;
+    }
+
+    default RenderType getRenderType() {
+        return null;
+    }
+
+    default ChunkSectionLayer getBlockLayer() {
+        return null;
+    }
+
+    default Vector3f getTempVec3f() {
+        return new Vector3f();
+    }
+
+    default Vector3f getTempVec3f(float x, float y, float z) {
+        return this.getTempVec3f().set(x, y, z);
+    }
+
+    default Vector3f getTempVec3f(Vector3f vec) {
+        return this.getTempVec3f().set(vec);
+    }
+
+    default float[] getTempFloat4(float f1, float f2, float f3, float f4) {
+        return new float[]{f1, f2, f3, f4};
+    }
+
+    default int[] getTempInt4(int i1, int i2, int i3, int i4) {
+        return new int[]{i1, i2, i3, i4};
+    }
+
+    default void setRenderTypeBuffer(RenderTypeFeatureRenderer renderTypeBuffer) {
+    }
+
+    default RenderTypeFeatureRenderer getRenderTypeBuffer() {
+        return null;
+    }
+
+    default void setQuadVertexPositions(VertexPosition[] vps) {
+    }
+
+    default void setMidBlock(float mbx, float mby, float mbz) {
+    }
+
+    default Vector3f getMidBlock() {
+        return null;
+    }
+
+    default VertexConsumer getSecondaryBuilder() {
+        return null;
+    }
+
+    default int getVertexCount() {
+        return 0;
+    }
+
+    default int applyBakedLighting(int lightmapCoord, int[] data, int pos) {
+        int offsetInt = getLightOffset(0);
+        int blBaked = LightCoordsUtil.block(data[pos + offsetInt]);
+        int slBaked = LightCoordsUtil.sky(data[pos + offsetInt]);
+        if (blBaked == 0 && slBaked == 0) {
+            return lightmapCoord;
+        }
+
+        int bl = LightCoordsUtil.block(lightmapCoord);
+        int sl = LightCoordsUtil.sky(lightmapCoord);
+        bl = Math.max(bl, blBaked);
+        sl = Math.max(sl, slBaked);
+        return LightCoordsUtil.pack(bl, sl);
+    }
+
+    static int getLightOffset(int v) {
+        return v * 8 + 6;
+    }
+
+    default Vector3f applyBakedNormals(int[] data, int pos, Matrix3f normalTransform) {
+        int offsetNormal = 7;
+        int val = data[pos + offsetNormal];
+        byte nx = (byte)(val >> 0 & 0xFF);
+        byte ny = (byte)(val >> 8 & 0xFF);
+        byte nz = (byte)(val >> 16 & 0xFF);
+        if (nx == 0 && ny == 0 && nz == 0) {
+            return null;
+        }
+
+        Vector3f generated = this.getTempVec3f(nx / 127.0F, ny / 127.0F, nz / 127.0F);
+        MathUtils.transform(generated, normalTransform);
+        return generated;
+    }
+
+    default void getBulkData(ByteBuffer buffer) {
+    }
+
+    default void putBulkData(ByteBuffer buffer) {
+    }
+
+    default boolean canAddVertexFast() {
+        return false;
+    }
+
+    default void addVertexFast(float x, float y, float z, int color, float texU, float texV, int overlayUV, int lightmapUV, int normals) {
+    }
+}

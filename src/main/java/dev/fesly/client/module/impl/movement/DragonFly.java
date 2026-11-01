@@ -1,0 +1,25 @@
+package dev.fesly.client.module.impl.movement;
+import dev.fesly.client.module.api.Category;
+import dev.fesly.client.module.api.Module;
+import dev.fesly.client.module.api.ModuleInfo;
+import dev.fesly.client.module.impl.combat.Aura;
+import dev.fesly.impl.event.Listener;
+import dev.fesly.impl.event.annotations.EventLink;
+import dev.fesly.impl.event.impl.motion.MotionEvent;
+import dev.fesly.impl.util.player.MoveUtil;
+import net.minecraft.client.util.InputMappings;
+import org.lwjgl.glfw.GLFW;
+@ModuleInfo(name = "DragonFly", description = "", category = Category.MOVEMENT)
+public class DragonFly extends Module {
+    @EventLink
+    public final Listener<MotionEvent> onPlayerUpdate = event -> {
+        if (mc.player == null) return;
+        if (MoveUtil.isMoving() && mc.player.abilities.isFlying) {
+            MoveUtil.setSpeed(0.99F);
+        }
+    };
+    @java.lang.SuppressWarnings("all")
+    public Listener<MotionEvent> getOnPlayerUpdate() {
+        return this.onPlayerUpdate;
+    }
+}

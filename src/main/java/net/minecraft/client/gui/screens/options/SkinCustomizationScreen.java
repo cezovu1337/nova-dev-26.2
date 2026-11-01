@@ -1,0 +1,46 @@
+package net.minecraft.client.gui.screens.options;
+
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.client.Options;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.CycleButton;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.player.PlayerModelPart;
+import net.optifine.Lang;
+import net.optifine.gui.GuiScreenCapeOF;
+
+public class SkinCustomizationScreen extends OptionsSubScreen {
+    private static final Component TITLE = Component.translatable("options.skinCustomisation.title");
+    private Button btnCape;
+    private int countButtons;
+
+    public SkinCustomizationScreen(Screen lastScreen, Options options) {
+        super(lastScreen, options, TITLE);
+    }
+
+    @Override
+    protected void addOptions() {
+        List<AbstractWidget> widgets = new ArrayList<>();
+
+        for (PlayerModelPart part : PlayerModelPart.values()) {
+            widgets.add(
+                CycleButton.onOffBuilder(this.options.isModelPartEnabled(part))
+                    .create(part.getName(), (button, value) -> this.options.setModelPart(part, value))
+            );
+        }
+
+        widgets.add(this.options.mainHand().createButton(this.options));
+        this.list.addSmall(widgets);
+        this.countButtons = widgets.size();
+        this.btnCape = Button.builder(
+                Lang.getComponent("of.options.skinCustomisation.ofCape"), button -> this.minecraft.gui.setScreen(new GuiScreenCapeOF(this))
+            )
+            .size(200, 20)
+            .build();
+        this.btnCape.setPosition(this.width / 2 - 100, this.layout.getHeaderHeight() + 8 + 24 * (this.countButtons / 2));
+        this.list.addSmall(List.of(this.btnCape));
+    }
+}

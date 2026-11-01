@@ -1,0 +1,173 @@
+package net.minecraft.client.renderer.rendertype;
+
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.systems.ScissorState;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.feature.ItemFeatureRenderer;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.resources.Identifier;
+import org.joml.Matrix4f;
+
+public class RenderType {
+    private static final int MEGABYTE = 1048576;
+    public static final int BIG_BUFFER_SIZE = 4194304;
+    public static final int SMALL_BUFFER_SIZE = 786432;
+    public static final int TRANSIENT_BUFFER_SIZE = 1536;
+    private final RenderSetup state;
+    private final Optional<RenderType> outline;
+    protected final String name;
+    private Identifier textureLocation;
+    private Map<Identifier, RenderType> mapTextured = new HashMap<>();
+    public static RenderType drawRenderType;
+    public static String SAMPLER0 = "Sampler0";
+
+    private RenderType(String name, RenderSetup state) {
+        this.name = name;
+        this.state = state;
+        this.outline = state.outlineProperty == RenderSetup.OutlineProperty.AFFECTS_OUTLINE
+            ? state.textures.values().stream().findFirst().map(texture -> RenderTypes.OUTLINE.apply(texture.location(), state.pipeline.isCull()))
+            : Optional.empty();
+        RenderSetup.TextureBinding texBind = state.textures.get(SAMPLER0);
+        if (texBind != null) {
+            this.textureLocation = texBind.location();
+        }
+    }
+
+    static RenderType create(String name, RenderSetup state) {
+        return new RenderType(name, state);
+    }
+
+    @Override
+    public String toString() {
+        return "RenderType[" + this.name + ":" + this.state + "]";
+    }
+
+    public boolean hasBlending() {
+        return this.state.pipeline.getColorTargetState().blendFunction().isPresent();
+    }
+
+    public OutputTarget outputTarget() {
+        return this.state.outputTarget;
+    }
+
+    public PreparedRenderType prepare() {
+        Minecraft minecraft = Minecraft.getInstance();
+        List<PreparedRenderType.Texture> textures = this.state
+            .prepareTextures(
+                minecraft.getTextureManager(),
+                RenderSystem.getSamplerCache(),
+                minecraft.gameRenderer.overlayTexture().getTextureView(),
+                minecraft.gameRenderer.lightmap()
+            );
+        return new PreparedRenderType(
+            this.state.pipeline,
+            this.state.outputTarget,
+            this.writeDynamicTransforms(RenderSystem.getModelViewMatrixCopy()),
+            new ScissorState(RenderSystem.getScissorStateForRenderTypeDraws()),
+            textures,
+            this
+        );
+    }
+
+    private GpuBufferSlice writeDynamicTransforms(Matrix4f modelViewMatrix) {
+        Consumer<Matrix4f> modelViewModifier = this.state.layeringTransform.getModifier();
+        if (modelViewModifier != null) {
+            modelViewModifier.accept(modelViewMatrix);
+        }
+
+        return RenderSystem.getDynamicUniforms().writeTransform(modelViewMatrix, this.state.textureTransform.createMatrix());
+    }
+
+    public VertexFormat format() {
+        return this.state.pipeline.getVertexFormatBinding(0);
+    }
+
+    public PrimitiveTopology primitiveTopology() {
+        return this.state.pipeline.getPrimitiveTopology();
+    }
+
+    public Optional<RenderType> outline() {
+        return this.outline;
+    }
+
+    public boolean isOutline() {
+        return this.state.outlineProperty == RenderSetup.OutlineProperty.IS_OUTLINE;
+    }
+
+    public RenderPipeline pipeline() {
+        return this.state.pipeline;
+    }
+
+    public boolean affectsCrumbling() {
+        return this.state.affectsCrumbling;
+    }
+
+    public boolean canConsolidateConsecutiveGeometry() {
+        return !this.primitiveTopology().connectedPrimitives;
+    }
+
+    public boolean sortOnUpload() {
+        return this.state.sortOnUpload;
+    }
+
+    public String getName() {
+        return this.name;
+    }
+
+    public boolean isEntitySolid() {
+        return this.state.pipeline == RenderPipelines.ENTITY_SOLID;
+    }
+
+    public boolean isEyes() {
+        return this.state.pipeline == RenderPipelines.EYES;
+    }
+
+    public Identifier getTextureLocation() {
+        return this.textureLocation;
+    }
+
+    public boolean isGlint() {
+        return this.getTextureLocation() == ItemFeatureRenderer.ENCHANTED_GLINT_ARMOR | this.getTextureLocation() == ItemFeatureRenderer.ENCHANTED_GLINT_ITEM;
+    }
+
+    public boolean isAtlasTextureBlocks() {
+        Identifier loc = this.getTextureLocation();
+        return loc == TextureAtlas.LOCATION_BLOCKS;
+    }
+
+    public RenderType getTextured(Identifier textureLocationIn) {
+        if (this.textureLocation == null) {
+            return this;
+        }
+
+        if (this.textureLocation.equals(textureLocationIn)) {
+            return this;
+        }
+
+        RenderType typeTex = this.mapTextured.get(textureLocationIn);
+        if (typeTex == null) {
+            RenderSetup.TextureBinding texBind = this.state.textures.get(SAMPLER0);
+            RenderSetup.TextureBinding texBind2 = new RenderSetup.TextureBinding(textureLocationIn, texBind.sampler());
+            RenderSetup stateTex = this.state.duplicate();
+            stateTex.textures.put(SAMPLER0, texBind2);
+            typeTex = create(this.name, stateTex);
+            this.mapTextured.put(textureLocationIn, typeTex);
+        }
+
+        return typeTex;
+    }
+
+    public boolean affectsOutline() {
+        return this.state.outlineProperty == RenderSetup.OutlineProperty.AFFECTS_OUTLINE;
+    }
+}

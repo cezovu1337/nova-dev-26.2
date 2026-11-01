@@ -1,0 +1,54 @@
+package net.minecraft.client.renderer.blockentity.state;
+
+import net.minecraft.CrashReportCategory;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
+import net.minecraft.client.renderer.feature.ModelFeatureRenderer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.LightCoordsUtil;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.entity.BlockEntityTypes;
+import net.minecraft.world.level.block.state.BlockState;
+
+public class BlockEntityRenderState {
+    public BlockPos blockPos = BlockPos.ZERO;
+    private BlockState blockState = Blocks.AIR.defaultBlockState();
+    public BlockEntityType<?> blockEntityType = BlockEntityTypes.TEST_BLOCK;
+    public int lightCoords;
+    public ModelFeatureRenderer.CrumblingOverlay breakProgress;
+    public BlockEntity blockEntity;
+    public BlockEntityRenderer blockEntityRenderer;
+
+    public static void extractBase(BlockEntity blockEntity, BlockEntityRenderState state, ModelFeatureRenderer.CrumblingOverlay breakProgress) {
+        state.blockPos = blockEntity.getBlockPos();
+        state.blockState = blockEntity.getBlockState();
+        state.blockEntityType = blockEntity.getType();
+        state.lightCoords = blockEntity.getLevel() != null ? LightCoordsUtil.getLightCoords(blockEntity.getLevel(), blockEntity.getBlockPos()) : 15728880;
+        state.breakProgress = breakProgress;
+        state.blockEntity = blockEntity;
+    }
+
+    public void fillCrashReportCategory(CrashReportCategory category) {
+        category.setDetail("BlockEntityRenderState", this.getClass().getCanonicalName());
+        category.setDetail("Position", this.blockPos);
+        category.setDetail("Block state", this.blockState::toString);
+    }
+
+    @Override
+    public String toString() {
+        Identifier blockEntityKey = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(this.blockEntityType);
+        return "type: "
+            + blockEntityKey
+            + ", pos: "
+            + this.blockPos
+            + ", state: "
+            + this.blockState
+            + ", entity: "
+            + this.blockEntity
+            + ", renderer: "
+            + this.blockEntityRenderer;
+    }
+}

@@ -1,0 +1,218 @@
+buildscript {
+    repositories {
+        mavenLocal()
+        maven { url = 'https://maven.minecraftforge.net' }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:6+'
+        classpath "gradle.plugin.org.jetbrains.gradle.plugin.idea-ext:gradle-idea-ext:1.1.3"
+    }
+}
+
+import net.minecraftforge.gradle.common.util.Utils
+import net.minecraftforge.gradle.common.util.VersionJson
+import org.jetbrains.gradle.ext.*
+
+apply plugin: 'eclipse'
+apply plugin: 'net.minecraftforge.gradle.patcher'
+apply plugin: "org.jetbrains.gradle.plugin.idea-ext"
+
+println(' Java: ' + System.getProperty('java.version') +
+        ' JVM: ' + System.getProperty('java.vm.version') + '(' + System.getProperty('java.vendor') + ')' +
+        ' Arch: ' + System.getProperty('os.arch'))
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+configurations {
+    shade
+    compile.extendsFrom shade
+}
+
+group = 'me.yourname'
+version = '1.0.0'
+
+ext {
+    minecraft_version = '26.2'
+    mcp_version = '20260616.103818'
+    mappings_channel = 'official'
+    mappings_version = '26.2'
+    spi_version = '8.0.0'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'org.projectlombok:lombok:1.18.36'
+    implementation 'net.minecraftforge:forgespi:' + spi_version
+//    Use the shade to add the lib to the jar
+//    or use compile if you want to load the lib from the version.json
+//    from a maven repo
+//    shade 'package-here'
+//    compile 'package-here'
+}
+
+project(':mcp') {
+    apply plugin: 'net.minecraftforge.gradle.mcp'
+    mcp {
+        config = minecraft_version + '-' + mcp_version
+        pipeline = 'joined'
+    }
+}
+
+evaluationDependsOn(':mcp')
+
+patcher {
+    parent = project(':mcp')
+    patchedSrc = file('src/main/java')
+    mappings channel: mappings_channel, version: mappings_version
+    mcVersion = minecraft_version
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.fork = true
+    options.forkOptions.memoryMaximumSize = '6g'
+}
+
+jar {
+    configurations.shade.each { dep ->
+        from(project.zipTree(dep)) {
+            exclude 'META-INF', 'META-INF/**'
+        }
+    }
+}
+
+var assetsFolder = file('run/assets')
+
+tasks.register('runclient', JavaExec) {
+    group = "MCP"
+    description = "Runs the client"
+    dependsOn ':downloadAssets'
+    classpath sourceSets.main.runtimeClasspath
+    if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+        jvmArgs '-XstartOnFirstThread'
+    }
+
+    var runFolder = file('run')
+
+    workingDir runFolder
+    args '--gameDir', '.'
+    args '--version', minecraft_version
+    args '--assetsDir', runFolder.relativePath(assetsFolder)
+    args '--accessToken', '0'
+    args '--quickPlaySingleplayer', 'New World'
+    mainClass = 'net.minecraft.client.main.Main'
+
+    doFirst {
+        var versionJson = Utils.loadJson(downloadAssets.getMeta().get().getAsFile(), VersionJson.class)
+        args '--assetIndex', versionJson.assetIndex.id
+    }
+}
+
+
+tasks.register('setup') {
+    group = "MCP"
+    description = "Setups the dev workspace"
+    dependsOn ':extractMapped', ':downloadAssets'
+    doLast {
+        mkdir assetsFolder
+        copy {
+            from downloadAssets.output.path
+            into assetsFolder
+        }
+    }
+}
+
+tasks.register('copyAssets') {
+    group = "MCP"
+    description = "Download and place the assets into the run folder"
+    dependsOn ':downloadAssets'
+    doLast {
+        mkdir 'run/assets'
+        copy {
+            from downloadAssets.output.path
+            into assetsFolder
+        }
+    }
+}
+
+tasks.register('runserver', JavaExec) {
+    mkdir 'runserver'
+    group = "MCP"
+    description = "Runs the server"
+    standardInput = System.in
+    classpath sourceSets.main.runtimeClasspath
+    mainClass = 'net.minecraft.server.Main'
+    workingDir 'runserver'
+}
+
+tasks.register('serverJar', Jar) {
+    group = "MCP"
+    description = "Builds a runnable server jar into build/server"
+    archiveFileName = 'server.jar'
+    destinationDirectory = file("$buildDir/server")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    def clientExtra = { sourceSets.main.runtimeClasspath.find { it.name == 'client-extra.jar' } }
+    def libraries = { sourceSets.main.runtimeClasspath.filter { it.isFile() && it.name.endsWith('.jar') && it.name != 'client-extra.jar' } }
+
+    from sourceSets.main.output
+    from({ zipTree(clientExtra()) }) {
+        exclude 'META-INF/**'
+    }
+
+    doFirst {
+        manifest.attributes(
+                'Main-Class': 'net.minecraft.server.Main',
+                'Class-Path': libraries().collect { 'libraries/' + it.name }.join(' ')
+        )
+    }
+    doLast {
+        copy {
+            from libraries()
+            into "$buildDir/server/libraries"
+        }
+    }
+}
+
+tasks.register('installClient', Jar) {
+    group = "MCP"
+    description = "Installs the client into the Minecraft launcher's versions folder"
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    def os = System.getProperty('os.name').toLowerCase()
+    def home = System.getProperty('user.home')
+    def mcDir = file(project.findProperty('mcDir') ?: (os.contains('win') ? System.getenv('APPDATA') + '/.minecraft'
+            : os.contains('mac') ? home + '/Library/Application Support/minecraft' : home + '/.minecraft'))
+    def versionName = project.findProperty('versionName') ?: minecraft_version + '-mcp'
+    def versionDir = new File(mcDir, 'versions/' + versionName)
+
+    archiveFileName = versionName + '.jar'
+    destinationDirectory = versionDir
+
+    from sourceSets.main.output
+    from({ zipTree(sourceSets.main.runtimeClasspath.find { it.name == 'client-extra.jar' }) }) {
+        exclude 'META-INF/**'
+    }
+
+    doLast {
+        def json = new groovy.json.JsonSlurper().parse(project(':mcp').file('build/mcp/downloadJson/version.json'))
+        json.remove('downloads')
+        json.id = versionName
+        new File(versionDir, versionName + '.json').text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))
+        println "Installed $versionName into $versionDir"
+    }
+}
+
+idea.project.settings {
+    runConfigurations {
+        "Minecraft"(Application) {
+            mainClass = 'mcp.client.Start'
+            workingDirectory = "$projectDir/run"
+            moduleName = idea.module.name + '.main'
+        }
+    }
+}

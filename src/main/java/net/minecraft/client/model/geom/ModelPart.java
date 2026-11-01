@@ -1,0 +1,974 @@
+package net.minecraft.client.model.geom;
+
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.Map.Entry;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.feature.RenderTypeFeatureRenderer;
+import net.minecraft.core.Direction;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.RandomSource;
+import net.minecraft.util.Util;
+import net.optifine.Config;
+import net.optifine.IRandomEntity;
+import net.optifine.RandomEntities;
+import net.optifine.entity.model.CustomEntityModels;
+import net.optifine.entity.model.anim.ModelUpdater;
+import net.optifine.model.Attachment;
+import net.optifine.model.AttachmentPath;
+import net.optifine.model.AttachmentPaths;
+import net.optifine.model.AttachmentType;
+import net.optifine.model.ModelSprite;
+import net.optifine.render.BoxVertexPositions;
+import net.optifine.render.RenderPositions;
+import net.optifine.render.RenderState;
+import net.optifine.render.VertexPosition;
+import net.optifine.shaders.Shaders;
+import net.optifine.util.ArrayUtils;
+import net.optifine.util.MathUtils;
+import net.optifine.util.Mutable;
+import org.joml.Matrix3f;
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.joml.Vector3fc;
+
+public final class ModelPart {
+    public static final float DEFAULT_SCALE = 1.0F;
+    public float x;
+    public float y;
+    public float z;
+    public float xRot;
+    public float yRot;
+    public float zRot;
+    public float xScale = 1.0F;
+    public float yScale = 1.0F;
+    public float zScale = 1.0F;
+    public boolean visible = true;
+    public boolean skipDraw;
+    public final List<ModelPart.Cube> cubes;
+    public final Map<String, ModelPart> children;
+    private PartPose initialPose = PartPose.ZERO;
+    private String name;
+    public List<ModelPart> childModelsList;
+    public List<ModelSprite> spriteList = new ArrayList<>();
+    public boolean mirrorV = false;
+    private Identifier textureLocation = null;
+    private String id = null;
+    private ModelUpdater modelUpdater;
+    private LevelRenderer renderGlobal = Config.getRenderGlobal();
+    private boolean custom;
+    private Attachment[] attachments;
+    private AttachmentPaths attachmentPaths;
+    private boolean attachmentPathsChecked;
+    private ModelPart parent;
+    private ModelLayerLocation modelLayerLocation;
+    public float textureWidth = 64.0F;
+    public float textureHeight = 32.0F;
+    public float textureOffsetX;
+    public float textureOffsetY;
+    public boolean mirror;
+    public static final Set<Direction> ALL_VISIBLE = EnumSet.allOf(Direction.class);
+
+    public ModelPart setTextureOffset(float x, float y) {
+        this.textureOffsetX = x;
+        this.textureOffsetY = y;
+        return this;
+    }
+
+    public ModelPart setTextureSize(int textureWidthIn, int textureHeightIn) {
+        this.textureWidth = textureWidthIn;
+        this.textureHeight = textureHeightIn;
+        return this;
+    }
+
+    public ModelPart(List<ModelPart.Cube> cubes, Map<String, ModelPart> children) {
+        cubes = new ArrayList<>(cubes);
+        this.cubes = cubes;
+        this.children = children;
+        this.childModelsList = new ArrayList<>(children.values());
+
+        for (ModelPart child : this.childModelsList) {
+            child.setParent(this);
+        }
+    }
+
+    public PartPose storePose() {
+        return PartPose.offsetAndRotation(this.x, this.y, this.z, this.xRot, this.yRot, this.zRot);
+    }
+
+    public PartPose getInitialPose() {
+        return this.initialPose;
+    }
+
+    public void setInitialPose(PartPose initialPose) {
+        this.initialPose = initialPose;
+    }
+
+    public void resetPose() {
+        this.loadPose(this.initialPose);
+    }
+
+    public void loadPose(PartPose pose) {
+        if (!this.custom) {
+            this.x = pose.x();
+            this.y = pose.y();
+            this.z = pose.z();
+            this.xRot = pose.xRot();
+            this.yRot = pose.yRot();
+            this.zRot = pose.zRot();
+            this.xScale = pose.xScale();
+            this.yScale = pose.yScale();
+            this.zScale = pose.zScale();
+        }
+    }
+
+    public boolean hasChild(String name) {
+        return this.children.containsKey(name);
+    }
+
+    public ModelPart getChild(String name) {
+        ModelPart result = this.children.get(name);
+        if (result == null) {
+            throw new NoSuchElementException("Can't find part " + name);
+        } else {
+            return result;
+        }
+    }
+
+    public void setPos(float x, float y, float z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    public void setRotation(float xRot, float yRot, float zRot) {
+        this.xRot = xRot;
+        this.yRot = yRot;
+        this.zRot = zRot;
+    }
+
+    public void render(PoseStack poseStack, VertexConsumer buffer, int lightCoords, int overlayCoords) {
+        this.render(poseStack, buffer, lightCoords, overlayCoords, -1);
+    }
+
+    public void render(PoseStack poseStack, VertexConsumer buffer, int lightCoords, int overlayCoords, int color) {
+        this.render(poseStack, buffer, lightCoords, overlayCoords, color, true);
+    }
+
+    public void render(PoseStack poseStack, VertexConsumer buffer, int lightCoords, int overlayCoords, int color, boolean updateModel) {
+        if (this.visible && (!this.cubes.isEmpty() || !this.children.isEmpty() || !this.spriteList.isEmpty())) {
+            RenderTypeFeatureRenderer renderTypeBuffer = null;
+            if (this.textureLocation != null && !RenderState.isRenderOverlayEyes()) {
+                renderTypeBuffer = buffer.getRenderTypeBuffer();
+                if (renderTypeBuffer != null) {
+                    renderTypeBuffer.saveRenderState();
+                    buffer = renderTypeBuffer.getSubVertexBuilder(this.textureLocation);
+                }
+            }
+
+            if (updateModel && CustomEntityModels.isActive()) {
+                this.updateModel();
+            }
+
+            poseStack.pushPose();
+            this.translateAndRotate(poseStack);
+            if (!this.skipDraw && this.cubes.size() > 0) {
+                this.compile(poseStack.last(), buffer, lightCoords, overlayCoords, color);
+            }
+
+            int childModelsSize = this.childModelsList.size();
+
+            for (int ix = 0; ix < childModelsSize; ix++) {
+                ModelPart child = this.childModelsList.get(ix);
+                child.render(poseStack, buffer, lightCoords, overlayCoords, color, false);
+            }
+
+            int spriteListSize = this.spriteList.size();
+
+            for (int ix = 0; ix < spriteListSize; ix++) {
+                ModelSprite sprite = this.spriteList.get(ix);
+                sprite.render(poseStack, buffer, lightCoords, overlayCoords, color);
+            }
+
+            poseStack.popPose();
+            if (renderTypeBuffer != null) {
+                renderTypeBuffer.restoreRenderState();
+            }
+        }
+    }
+
+    public void rotateBy(Quaternionf rotation) {
+        Matrix3f oldRotation = new Matrix3f().rotationZYX(this.zRot, this.yRot, this.xRot);
+        Matrix3f newRotation = oldRotation.rotate(rotation);
+        Vector3f newAngles = newRotation.getEulerAnglesZYX(new Vector3f());
+        this.setRotation(newAngles.x, newAngles.y, newAngles.z);
+    }
+
+    public void getExtentsForGui(PoseStack poseStack, Consumer<Vector3fc> output) {
+        this.visit(poseStack, (pose, partPath, cubeIndex, cube) -> {
+            for (ModelPart.Polygon polygon : cube.polygons) {
+                for (ModelPart.Vertex vertex : polygon.vertices()) {
+                    float x = vertex.worldX();
+                    float y = vertex.worldY();
+                    float z = vertex.worldZ();
+                    Vector3f pos = pose.pose().transformPosition(x, y, z, new Vector3f());
+                    output.accept(pos);
+                }
+            }
+        });
+    }
+
+    public void visit(PoseStack poseStack, ModelPart.Visitor visitor) {
+        this.visit(poseStack, visitor, "");
+    }
+
+    private void visit(PoseStack poseStack, ModelPart.Visitor visitor, String path) {
+        if (!this.cubes.isEmpty() || !this.children.isEmpty()) {
+            poseStack.pushPose();
+            this.translateAndRotate(poseStack);
+            PoseStack.Pose pose = poseStack.last();
+
+            for (int i = 0; i < this.cubes.size(); i++) {
+                visitor.visit(pose, path, i, this.cubes.get(i));
+            }
+
+            String childPath = path + "/";
+            this.children.forEach((name, child) -> child.visit(poseStack, visitor, childPath + name));
+            poseStack.popPose();
+        }
+    }
+
+    public void translateAndRotate(PoseStack poseStack) {
+        poseStack.translate(this.x / 16.0F, this.y / 16.0F, this.z / 16.0F);
+        if (this.xRot != 0.0F || this.yRot != 0.0F || this.zRot != 0.0F) {
+            poseStack.mulPose(new Quaternionf().rotationZYX(this.zRot, this.yRot, this.xRot));
+        }
+
+        if (this.xScale != 1.0F || this.yScale != 1.0F || this.zScale != 1.0F) {
+            poseStack.scale(this.xScale, this.yScale, this.zScale);
+        }
+    }
+
+    private void compile(PoseStack.Pose pose, VertexConsumer builder, int lightCoords, int overlayCoords, int color) {
+        boolean shadersVelocity = Config.isShaders() && Shaders.useVelocityAttrib && Config.isMinecraftThread();
+        int cubeListSize = this.cubes.size();
+
+        for (int ic = 0; ic < cubeListSize; ic++) {
+            ModelPart.Cube cube = this.cubes.get(ic);
+            VertexPosition[][] boxPos = null;
+            if (shadersVelocity) {
+                IRandomEntity entity = RandomEntities.getRandomEntityRendered();
+                if (entity != null) {
+                    boxPos = cube.getBoxVertexPositions(entity.getId());
+                }
+            }
+
+            cube.compile(pose, builder, lightCoords, overlayCoords, color, boxPos);
+        }
+    }
+
+    public ModelPart.Cube getRandomCube(RandomSource random) {
+        return Util.getRandom(this.cubes, random);
+    }
+
+    public boolean isEmpty() {
+        return this.cubes.isEmpty();
+    }
+
+    public void offsetPos(Vector3f offset) {
+        this.x = this.x + offset.x();
+        this.y = this.y + offset.y();
+        this.z = this.z + offset.z();
+    }
+
+    public void offsetRotation(Vector3f offset) {
+        this.xRot = this.xRot + offset.x();
+        this.yRot = this.yRot + offset.y();
+        this.zRot = this.zRot + offset.z();
+    }
+
+    public void offsetScale(Vector3f offset) {
+        this.xScale = this.xScale + offset.x();
+        this.yScale = this.yScale + offset.y();
+        this.zScale = this.zScale + offset.z();
+    }
+
+    public List<ModelPart> getAllParts() {
+        List<ModelPart> allParts = new ArrayList<>();
+        allParts.add(this);
+        this.addAllChildren((name, part) -> allParts.add(part));
+        return List.copyOf(allParts);
+    }
+
+    public Function<String, ModelPart> createPartLookup() {
+        Map<String, ModelPart> parts = new HashMap<>();
+        parts.put("root", this);
+        this.addAllChildren(parts::putIfAbsent);
+        return parts::get;
+    }
+
+    private void addAllChildren(BiConsumer<String, ModelPart> output) {
+        for (Entry<String, ModelPart> entry : this.children.entrySet()) {
+            output.accept(entry.getKey(), entry.getValue());
+        }
+
+        for (ModelPart part : this.children.values()) {
+            part.addAllChildren(output);
+        }
+    }
+
+    public void addSprite(float posX, float posY, float posZ, int sizeX, int sizeY, int sizeZ, float sizeAdd) {
+        this.spriteList.add(new ModelSprite(this, this.textureOffsetX, this.textureOffsetY, posX, posY, posZ, sizeX, sizeY, sizeZ, sizeAdd));
+    }
+
+    public Identifier getTextureLocation() {
+        return this.textureLocation;
+    }
+
+    public void setTextureLocation(Identifier textureLocation) {
+        this.textureLocation = textureLocation;
+    }
+
+    public String getId() {
+        return this.id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return this.name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void addBox(float[][] faceUvs, float x, float y, float z, float dx, float dy, float dz, float delta) {
+        this.cubes.add(new ModelPart.Cube(faceUvs, x, y, z, dx, dy, dz, delta, delta, delta, this.mirror, this.textureWidth, this.textureHeight));
+    }
+
+    public void addBox(float[][] faceUvs, float x, float y, float z, float dx, float dy, float dz, float deltaW, float deltaH, float deltaD) {
+        this.cubes.add(new ModelPart.Cube(faceUvs, x, y, z, dx, dy, dz, deltaW, deltaH, deltaD, this.mirror, this.textureWidth, this.textureHeight));
+    }
+
+    public void addBox(float x, float y, float z, float width, float height, float depth, float delta) {
+        this.addBox(this.textureOffsetX, this.textureOffsetY, x, y, z, width, height, depth, delta, delta, delta, this.mirror, false);
+    }
+
+    public void addBox(float x, float y, float z, float width, float height, float depth, float deltaW, float deltaH, float deltaD) {
+        this.addBox(this.textureOffsetX, this.textureOffsetY, x, y, z, width, height, depth, deltaW, deltaH, deltaD, this.mirror, false);
+    }
+
+    private void addBox(
+        float texOffX,
+        float texOffY,
+        float x,
+        float y,
+        float z,
+        float width,
+        float height,
+        float depth,
+        float deltaX,
+        float deltaY,
+        float deltaZ,
+        boolean mirror,
+        boolean dummyIn
+    ) {
+        this.cubes
+            .add(
+                new ModelPart.Cube(
+                    texOffX, texOffY, x, y, z, width, height, depth, deltaX, deltaY, deltaZ, mirror, this.textureWidth, this.textureHeight, ALL_VISIBLE
+                )
+            );
+    }
+
+    public ModelPart getChildModelDeep(String name) {
+        if (name == null) {
+            return null;
+        }
+
+        if (this.children.containsKey(name)) {
+            return this.getChild(name);
+        }
+
+        if (this.children != null) {
+            for (String key : this.children.keySet()) {
+                ModelPart child = this.children.get(key);
+                ModelPart mr = child.getChildModelDeep(name);
+                if (mr != null) {
+                    return mr;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public ModelPart getChildById(String id) {
+        if (id == null) {
+            return null;
+        }
+
+        if (this.children != null) {
+            for (String key : this.children.keySet()) {
+                ModelPart child = this.children.get(key);
+                if (id.equals(child.getId())) {
+                    return child;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public ModelPart getChildDeepById(String id) {
+        if (id == null) {
+            return null;
+        }
+
+        ModelPart mrChild = this.getChildById(id);
+        if (mrChild != null) {
+            return mrChild;
+        }
+
+        if (this.children != null) {
+            for (String key : this.children.keySet()) {
+                ModelPart child = this.children.get(key);
+                ModelPart mr = child.getChildDeepById(id);
+                if (mr != null) {
+                    return mr;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public ModelUpdater getModelUpdater() {
+        return this.modelUpdater;
+    }
+
+    public void setModelUpdater(ModelUpdater modelUpdater) {
+        this.modelUpdater = modelUpdater;
+    }
+
+    public void addChildModel(String name, ModelPart part) {
+        if (part != null) {
+            this.children.put(name, part);
+            this.childModelsList = new ArrayList<>(this.children.values());
+            part.setParent(this);
+            if (part.getName() == null) {
+                part.setName(name);
+            }
+        }
+    }
+
+    public String getUniqueChildModelName(String name) {
+        String baseName = name;
+
+        for (int counter = 2; this.children.containsKey(name); counter++) {
+            name = baseName + "-" + counter;
+        }
+
+        return name;
+    }
+
+    private void updateModel() {
+        if (this.modelUpdater != null) {
+            this.modelUpdater.update();
+        } else {
+            int childModelsSize = this.childModelsList.size();
+
+            for (int ix = 0; ix < childModelsSize; ix++) {
+                ModelPart modelpart = this.childModelsList.get(ix);
+                modelpart.updateModel();
+            }
+        }
+    }
+
+    public boolean isCustom() {
+        return this.custom;
+    }
+
+    public void setCustom(boolean custom) {
+        this.custom = custom;
+    }
+
+    public ModelPart getParent() {
+        return this.parent;
+    }
+
+    public void setParent(ModelPart parent) {
+        this.parent = parent;
+    }
+
+    public Attachment[] getAttachments() {
+        return this.attachments;
+    }
+
+    public void setAttachments(Attachment[] attachments) {
+        this.attachments = attachments;
+    }
+
+    public boolean applyAttachmentTransform(AttachmentType typeIn, PoseStack matrixStackIn) {
+        if (this.attachmentPathsChecked && this.attachmentPaths == null) {
+            return false;
+        }
+
+        AttachmentPath ap = this.getAttachmentPath(typeIn);
+        if (ap == null) {
+            return false;
+        }
+
+        ap.applyTransform(matrixStackIn);
+        return true;
+    }
+
+    private AttachmentPath getAttachmentPath(AttachmentType typeIn) {
+        if (!this.attachmentPathsChecked) {
+            this.attachmentPathsChecked = true;
+            this.attachmentPaths = new AttachmentPaths();
+            this.collectAttachmentPaths(new ArrayList<>(), this.attachmentPaths);
+            if (this.attachmentPaths.isEmpty()) {
+                this.attachmentPaths = null;
+            }
+        }
+
+        return this.attachmentPaths == null ? null : this.attachmentPaths.getVisiblePath(typeIn);
+    }
+
+    private void collectAttachmentPaths(List<ModelPart> parents, AttachmentPaths paths) {
+        parents.add(this);
+        if (this.attachments != null) {
+            paths.addPaths(parents, this.attachments);
+        }
+
+        for (ModelPart mp : this.childModelsList) {
+            mp.collectAttachmentPaths(parents, paths);
+        }
+
+        parents.remove(parents.size() - 1);
+    }
+
+    public static ModelPart makeRoot() {
+        ModelPart part = new ModelPart(new ArrayList<>(), new HashMap<>());
+        part.setName("root");
+        return part;
+    }
+
+    public void retainChildren(ModelPart... partsIn) {
+        for (String childName : new ArrayList<>(this.children.keySet())) {
+            ModelPart child = this.children.get(childName);
+            if (!ArrayUtils.contains(partsIn, child)) {
+                this.children.remove(childName);
+            }
+        }
+
+        this.childModelsList = new ArrayList<>(this.children.values());
+    }
+
+    public void removeCubesDeep() {
+        this.cubes.clear();
+
+        for (ModelPart child : this.childModelsList) {
+            child.removeCubesDeep();
+        }
+    }
+
+    public ModelLayerLocation getModelLayerLocation() {
+        return this.modelLayerLocation;
+    }
+
+    public void setModelLayerLocation(ModelLayerLocation modelLayerLocation) {
+        this.modelLayerLocation = modelLayerLocation;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("name: " + this.name);
+        if (this.id != null) {
+            sb.append(", id: " + this.id);
+        }
+
+        if (this.cubes != null && this.cubes.size() > 0) {
+            sb.append(", boxes: " + this.cubes.size());
+        }
+
+        if (this.children != null && this.children.size() > 0) {
+            sb.append(", models: " + this.children.size());
+        }
+
+        if (this.custom) {
+            sb.append(", custom: " + this.custom);
+        }
+
+        return sb.toString();
+    }
+
+    public static class Cube {
+        public final ModelPart.Polygon[] polygons;
+        public final float minX;
+        public final float minY;
+        public final float minZ;
+        public final float maxX;
+        public final float maxY;
+        public final float maxZ;
+        private BoxVertexPositions boxVertexPositions;
+        private RenderPositions[] renderPositions;
+
+        public Cube(
+            int xTexOffs,
+            int yTexOffs,
+            float minX,
+            float minY,
+            float minZ,
+            float width,
+            float height,
+            float depth,
+            float growX,
+            float growY,
+            float growZ,
+            boolean mirror,
+            float xTexSize,
+            float yTexSize,
+            Set<Direction> visibleFaces
+        ) {
+            this((float)xTexOffs, (float)yTexOffs, minX, minY, minZ, width, height, depth, growX, growY, growZ, mirror, xTexSize, yTexSize, visibleFaces);
+        }
+
+        public Cube(
+            float xTexOffs,
+            float yTexOffs,
+            float minX,
+            float minY,
+            float minZ,
+            float width,
+            float height,
+            float depth,
+            float growX,
+            float growY,
+            float growZ,
+            boolean mirror,
+            float xTexSize,
+            float yTexSize,
+            Set<Direction> visibleFaces
+        ) {
+            this.minX = minX;
+            this.minY = minY;
+            this.minZ = minZ;
+            this.maxX = minX + width;
+            this.maxY = minY + height;
+            this.maxZ = minZ + depth;
+            this.polygons = new ModelPart.Polygon[visibleFaces.size()];
+            float maxX = minX + width;
+            float maxY = minY + height;
+            float maxZ = minZ + depth;
+            minX -= growX;
+            minY -= growY;
+            minZ -= growZ;
+            maxX += growX;
+            maxY += growY;
+            maxZ += growZ;
+            if (mirror) {
+                float tmp = maxX;
+                maxX = minX;
+                minX = tmp;
+            }
+
+            ModelPart.Vertex t0 = new ModelPart.Vertex(minX, minY, minZ, 0.0F, 0.0F);
+            ModelPart.Vertex t1 = new ModelPart.Vertex(maxX, minY, minZ, 0.0F, 8.0F);
+            ModelPart.Vertex t2 = new ModelPart.Vertex(maxX, maxY, minZ, 8.0F, 8.0F);
+            ModelPart.Vertex t3 = new ModelPart.Vertex(minX, maxY, minZ, 8.0F, 0.0F);
+            ModelPart.Vertex l0 = new ModelPart.Vertex(minX, minY, maxZ, 0.0F, 0.0F);
+            ModelPart.Vertex l1 = new ModelPart.Vertex(maxX, minY, maxZ, 0.0F, 8.0F);
+            ModelPart.Vertex l2 = new ModelPart.Vertex(maxX, maxY, maxZ, 8.0F, 8.0F);
+            ModelPart.Vertex l3 = new ModelPart.Vertex(minX, maxY, maxZ, 8.0F, 0.0F);
+            float u0 = xTexOffs;
+            float u1 = xTexOffs + depth;
+            float u2 = xTexOffs + depth + width;
+            float u22 = xTexOffs + depth + width + width;
+            float u3 = xTexOffs + depth + width + depth;
+            float u4 = xTexOffs + depth + width + depth + width;
+            float v0 = yTexOffs;
+            float v1 = yTexOffs + depth;
+            float v2 = yTexOffs + depth + height;
+            int pos = 0;
+            if (visibleFaces.contains(Direction.DOWN)) {
+                this.polygons[pos++] = new ModelPart.Polygon(new ModelPart.Vertex[]{l1, l0, t0, t1}, u1, v0, u2, v1, xTexSize, yTexSize, mirror, Direction.DOWN);
+            }
+
+            if (visibleFaces.contains(Direction.UP)) {
+                this.polygons[pos++] = new ModelPart.Polygon(new ModelPart.Vertex[]{t2, t3, l3, l2}, u2, v1, u22, v0, xTexSize, yTexSize, mirror, Direction.UP);
+            }
+
+            if (visibleFaces.contains(Direction.WEST)) {
+                this.polygons[pos++] = new ModelPart.Polygon(new ModelPart.Vertex[]{t0, l0, l3, t3}, u0, v1, u1, v2, xTexSize, yTexSize, mirror, Direction.WEST);
+            }
+
+            if (visibleFaces.contains(Direction.NORTH)) {
+                this.polygons[pos++] = new ModelPart.Polygon(
+                    new ModelPart.Vertex[]{t1, t0, t3, t2}, u1, v1, u2, v2, xTexSize, yTexSize, mirror, Direction.NORTH
+                );
+            }
+
+            if (visibleFaces.contains(Direction.EAST)) {
+                this.polygons[pos++] = new ModelPart.Polygon(new ModelPart.Vertex[]{l1, t1, t2, l2}, u2, v1, u3, v2, xTexSize, yTexSize, mirror, Direction.EAST);
+            }
+
+            if (visibleFaces.contains(Direction.SOUTH)) {
+                this.polygons[pos] = new ModelPart.Polygon(new ModelPart.Vertex[]{l0, l1, l2, l3}, u3, v1, u4, v2, xTexSize, yTexSize, mirror, Direction.SOUTH);
+            }
+
+            this.renderPositions = collectRenderPositions(this.polygons);
+        }
+
+        public Cube(
+            float[][] faceUvs,
+            float x,
+            float y,
+            float z,
+            float width,
+            float height,
+            float depth,
+            float deltaX,
+            float deltaY,
+            float deltaZ,
+            boolean mirorIn,
+            float texWidth,
+            float texHeight
+        ) {
+            this.minX = x;
+            this.minY = y;
+            this.minZ = z;
+            this.maxX = x + width;
+            this.maxY = y + height;
+            this.maxZ = z + depth;
+            this.polygons = new ModelPart.Polygon[6];
+            float f = x + width;
+            float f1 = y + height;
+            float f2 = z + depth;
+            x -= deltaX;
+            y -= deltaY;
+            z -= deltaZ;
+            f += deltaX;
+            f1 += deltaY;
+            f2 += deltaZ;
+            if (mirorIn) {
+                float f3 = f;
+                f = x;
+                x = f3;
+            }
+
+            ModelPart.Vertex pos0 = new ModelPart.Vertex(x, y, z, 0.0F, 0.0F);
+            ModelPart.Vertex pos1 = new ModelPart.Vertex(f, y, z, 0.0F, 8.0F);
+            ModelPart.Vertex pos2 = new ModelPart.Vertex(f, f1, z, 8.0F, 8.0F);
+            ModelPart.Vertex pos3 = new ModelPart.Vertex(x, f1, z, 8.0F, 0.0F);
+            ModelPart.Vertex pos4 = new ModelPart.Vertex(x, y, f2, 0.0F, 0.0F);
+            ModelPart.Vertex pos5 = new ModelPart.Vertex(f, y, f2, 0.0F, 8.0F);
+            ModelPart.Vertex pos6 = new ModelPart.Vertex(f, f1, f2, 8.0F, 8.0F);
+            ModelPart.Vertex pos7 = new ModelPart.Vertex(x, f1, f2, 8.0F, 0.0F);
+            this.polygons[2] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos5, pos4, pos0, pos1}, faceUvs[1], true, texWidth, texHeight, mirorIn, Direction.DOWN
+            );
+            this.polygons[3] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos2, pos3, pos7, pos6}, faceUvs[0], true, texWidth, texHeight, mirorIn, Direction.UP
+            );
+            this.polygons[1] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos0, pos4, pos7, pos3}, faceUvs[5], false, texWidth, texHeight, mirorIn, Direction.WEST
+            );
+            this.polygons[4] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos1, pos0, pos3, pos2}, faceUvs[2], false, texWidth, texHeight, mirorIn, Direction.NORTH
+            );
+            this.polygons[0] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos5, pos1, pos2, pos6}, faceUvs[4], false, texWidth, texHeight, mirorIn, Direction.EAST
+            );
+            this.polygons[5] = this.makeTexturedQuad(
+                new ModelPart.Vertex[]{pos4, pos5, pos6, pos7}, faceUvs[3], false, texWidth, texHeight, mirorIn, Direction.SOUTH
+            );
+            this.renderPositions = collectRenderPositions(this.polygons);
+        }
+
+        private static RenderPositions[] collectRenderPositions(ModelPart.Polygon[] quads) {
+            Map<Vector3f, RenderPositions> map = new LinkedHashMap<>();
+
+            for (int q = 0; q < quads.length; q++) {
+                ModelPart.Polygon quad = quads[q];
+                if (quad != null) {
+                    for (int v = 0; v < quad.vertices.length; v++) {
+                        ModelPart.Vertex vert = quad.vertices[v];
+                        Vector3f position = new Vector3f(vert.x, vert.y, vert.z);
+                        RenderPositions rp = map.get(position);
+                        if (rp == null) {
+                            rp = new RenderPositions(position);
+                            map.put(position, rp);
+                        }
+
+                        vert.renderPositions.set(rp);
+                    }
+                }
+            }
+
+            return map.values().toArray(new RenderPositions[map.size()]);
+        }
+
+        private ModelPart.Polygon makeTexturedQuad(
+            ModelPart.Vertex[] positionTextureVertexs,
+            float[] faceUvs,
+            boolean reverseUV,
+            float textureWidth,
+            float textureHeight,
+            boolean mirrorIn,
+            Direction directionIn
+        ) {
+            if (faceUvs == null) {
+                return null;
+            } else {
+                return reverseUV
+                    ? new ModelPart.Polygon(
+                        positionTextureVertexs, faceUvs[2], faceUvs[3], faceUvs[0], faceUvs[1], textureWidth, textureHeight, mirrorIn, directionIn
+                    )
+                    : new ModelPart.Polygon(
+                        positionTextureVertexs, faceUvs[0], faceUvs[1], faceUvs[2], faceUvs[3], textureWidth, textureHeight, mirrorIn, directionIn
+                    );
+            }
+        }
+
+        public VertexPosition[][] getBoxVertexPositions(int key) {
+            if (this.boxVertexPositions == null) {
+                this.boxVertexPositions = new BoxVertexPositions();
+            }
+
+            return this.boxVertexPositions.get(key);
+        }
+
+        public void compile(PoseStack.Pose pose, VertexConsumer builder, int lightCoords, int overlayCoords, int color) {
+            this.compile(pose, builder, lightCoords, overlayCoords, color, null);
+        }
+
+        public void compile(PoseStack.Pose pose, VertexConsumer builder, int lightCoords, int overlayCoords, int color, VertexPosition[][] boxPos) {
+            Matrix4f matrix = pose.pose();
+            Vector3f scratchVector = builder.getTempVec3f();
+
+            for (RenderPositions rp : this.renderPositions) {
+                MathUtils.transform(matrix, rp.getPositionDiv16(), rp.getPositionRender());
+            }
+
+            boolean fastRender = builder.canAddVertexFast();
+            int quadsSize = this.polygons.length;
+
+            for (int iq = 0; iq < quadsSize; iq++) {
+                ModelPart.Polygon polygon = this.polygons[iq];
+                if (polygon != null) {
+                    if (boxPos != null) {
+                        builder.setQuadVertexPositions(boxPos[iq]);
+                    }
+
+                    Vector3f normal = pose.transformNormal(polygon.normal, scratchVector);
+                    float nx = normal.x();
+                    float ny = normal.y();
+                    float nz = normal.z();
+                    if (fastRender) {
+                        byte nxb = BufferBuilder.normalIntValue(nx);
+                        byte nyb = BufferBuilder.normalIntValue(ny);
+                        byte nzb = BufferBuilder.normalIntValue(nz);
+                        int normals = (nzb & 255) << 16 | (nyb & 255) << 8 | nxb & 255;
+
+                        for (ModelPart.Vertex modelpart$vertex : polygon.vertices) {
+                            Vector3f posRender = modelpart$vertex.renderPositions.get().getPositionRender();
+                            builder.addVertexFast(
+                                posRender.x, posRender.y, posRender.z, color, modelpart$vertex.u, modelpart$vertex.v, overlayCoords, lightCoords, normals
+                            );
+                        }
+                    } else {
+                        for (ModelPart.Vertex vertex : polygon.vertices) {
+                            Vector3f posRender = vertex.renderPositions.get().getPositionRender();
+                            builder.addVertex(posRender.x, posRender.y, posRender.z, color, vertex.u, vertex.v, overlayCoords, lightCoords, nx, ny, nz);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public record Polygon(ModelPart.Vertex[] vertices, Vector3fc normal) {
+        public Polygon(ModelPart.Vertex[] vertices, float u0, float v0, float u1, float v1, float xTexSize, float yTexSize, boolean mirror, Direction facing) {
+            this(vertices, (mirror ? mirrorFacing(facing) : facing).getUnitVec3f());
+            float us = 0.0F / xTexSize;
+            float vs = 0.0F / yTexSize;
+            if (Config.isAntialiasing()) {
+                us = 0.05F / xTexSize;
+                vs = 0.05F / yTexSize;
+                if (u1 < u0) {
+                    us = -us;
+                }
+
+                if (v1 < v0) {
+                    vs = -vs;
+                }
+            }
+
+            vertices[0] = vertices[0].remap(u1 / xTexSize - us, v0 / yTexSize + vs);
+            vertices[1] = vertices[1].remap(u0 / xTexSize + us, v0 / yTexSize + vs);
+            vertices[2] = vertices[2].remap(u0 / xTexSize + us, v1 / yTexSize - vs);
+            vertices[3] = vertices[3].remap(u1 / xTexSize - us, v1 / yTexSize - vs);
+            if (mirror) {
+                int length = vertices.length;
+
+                for (int i = 0; i < length / 2; i++) {
+                    ModelPart.Vertex tmp = vertices[i];
+                    vertices[i] = vertices[length - 1 - i];
+                    vertices[length - 1 - i] = tmp;
+                }
+            }
+        }
+
+        private static Direction mirrorFacing(Direction facing) {
+            return facing.getAxis() == Direction.Axis.X ? facing.getOpposite() : facing;
+        }
+    }
+
+    public record Vertex(float x, float y, float z, float u, float v, Mutable<RenderPositions> renderPositions) {
+        public static final float SCALE_FACTOR = 16.0F;
+
+        public Vertex(float x, float y, float z, float u, float v) {
+            this(x, y, z, u, v, new Mutable<>());
+        }
+
+        public ModelPart.Vertex remap(float u, float v) {
+            return new ModelPart.Vertex(this.x, this.y, this.z, u, v);
+        }
+
+        public float worldX() {
+            return this.x / 16.0F;
+        }
+
+        public float worldY() {
+            return this.y / 16.0F;
+        }
+
+        public float worldZ() {
+            return this.z / 16.0F;
+        }
+    }
+
+    @FunctionalInterface
+    public interface Visitor {
+        void visit(PoseStack.Pose var1, String var2, int var3, ModelPart.Cube var4);
+    }
+}
