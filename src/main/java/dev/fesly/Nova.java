@@ -64,8 +64,8 @@ public class Nova {
         openurl("https://t.me/oldhouse1337");
         log.info("[t.me/OldHouse1337] Starting initialize " + getClientInfo().getName() + " client" + "...");
         String mcUser = Minecraft.getInstance().session.getUsername();
-        boolean check = (mcUser.equalsIgnoreCase("1ntave") || mcUser.equalsIgnoreCase("secretname") || mcUser.equalsIgnoreCase("IntaveDev") || mcUser.equalsIgnoreCase("Intave"));
-        user = new User(check ? "SecretName" : "HaramDev", "1", "developer");
+        boolean check = (mcUser.equalsIgnoreCase("1ntave") || mcUser.equalsIgnoreCase("secretname") || mcUser.equalsIgnoreCase("KODEK") || mcUser.equalsIgnoreCase("kodeknew"));
+        user = new User(check ? "SecretName" : "HaramPidorac", "1", "pidoraz");
         eventBus = new EventBus<>();
         moduleManager = new ModuleManager();
         componentManager = new ComponentManager();
